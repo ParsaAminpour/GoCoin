@@ -1,25 +1,18 @@
-version: '3.6'
+version: "2.2"
 services:
-  postgres:
-    image: postgres
-    restart: always
-    environment:
-      - POSTGRES_USER=root
-      - POSTGRES_PASSWORD=root
-      - POSTGRES_DB=root
-
-    ports:
-      - "5432:5432"
-    volumes:
-      - ./docker_postgres_init.sql:/docker-entrypoint-initdb.d/docker_postgres_init.sql
-
-  pgadmin-compose:
-    image: dpage/pgadmin4
-    environment:
-      PGADMIN_DEFAULT_EMAIL: "test@gmail.com"
-      PGADMIN_DEFAULT_PASSWORD: "test123!"
-
-    ports:
-      - "16543:80"
+  tronics:
+    container_name: gocoin
+    build: .
+    expose:
+      - "8082"
+    env_file:
+      - ./config/dev.env
     depends_on:
-      - postgres
+      - mongo
+    ports:
+      - "8082:8082"
+  mongo:
+    image: mongo
+    container_name: "gocoin"
+    ports:
+      - "27017:27017"

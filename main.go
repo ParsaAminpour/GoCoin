@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/joho/godotenv"
+	echojwt "github.com/labstack/echo-jwt"
+	_ "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"gorm.io/driver/postgres"
@@ -25,9 +27,8 @@ var (
 
 type User struct {
 	gorm.Model
-	ID       uint   `gorm:"primaryKey"`
-	Username string `gorm:"unique"`
-	Email    string `gorm:"unique"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
 }
 
 func (u *User) GetUser(username string) User {
@@ -63,6 +64,7 @@ func getDB() *gorm.DB {
 }
 
 func init_db_connection(conf *Config) (*gorm.DB, error) {
+	fmt.Println("I'm here...")
 	if db != nil {
 		return nil, fmt.Errorf("Db already initialized")
 	}
@@ -81,6 +83,7 @@ func init_db_connection(conf *Config) (*gorm.DB, error) {
 	if err := db.AutoMigrate(&User{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
 	}
+	fmt.Println("I'm here too...")
 
 	return db, nil
 }
@@ -123,29 +126,23 @@ func fetchUser(c echo.Context) error {
 
 func createUser(c echo.Context) error {
 	u := new(User)
+
+	// Bind JSON data directly into the User struct
 	if err := c.Bind(u); err != nil {
 		return c.String(http.StatusBadRequest, "Invalid parameters provided")
 	}
 
-	fmt.Println("Binded: ", u.Username, u.Email)
+	fmt.Printf("After Bind - Username: %s, Email: %s\n", u.Username, u.Email)
 
-	user := User{
-		Username: u.Username,
-		Email:    u.Email,
-	}
-
-	// Attempt to create the user in the database
-	if err := db.Create(&user).Error; err != nil {
-		// Check for specific database errors
+	if err := db.Create(u).Error; err != nil {
 		var pgError *pgconn.PgError
-		if errors.As(err, &pgError) && pgError.Code == "23505" { // "23505" is the PostgreSQL code for unique violation
+		if errors.As(err, &pgError) && pgError.Code == "23505" {
 			return c.JSON(http.StatusConflict, map[string]string{"error": "Username or Email already exists"})
 		}
-		// Other database errors
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not create user"})
 	}
 
-	return c.JSON(http.StatusCreated, user)
+	return c.JSON(http.StatusCreated, u)
 }
 
 func getAllUsers(c echo.Context) error {
@@ -158,7 +155,6 @@ func getAllUsers(c echo.Context) error {
 func deleteUser(c echo.Context) error {
 	id := c.Param("id")
 
-	// Check if the user exists
 	var user User
 	if err := db.First(&user, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -167,7 +163,6 @@ func deleteUser(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not retrieve user"})
 	}
 
-	// Delete the user
 	if err := db.Delete(&user).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not delete user"})
 	}
@@ -183,10 +178,13 @@ func main() {
 	fmt.Println("err: ", db.Error)
 
 	e := echo.New()
+
+	e.Use(echojwt.JWT([]byte("secret")))
+
 	e.Group("users")
 	e.GET("/users/get/:username", fetchUser)
 	e.GET("/users/all", getAllUsers)
-	e.POST("/users", createUser)
+	e.POST("/users/create", createUser)
 	e.DELETE("/users/:id", deleteUser)
 
 	e.Use(middleware.TimeoutWithConfig(middleware.TimeoutConfig{
