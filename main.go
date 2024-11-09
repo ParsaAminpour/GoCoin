@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ParsaAminpour/GoCoin/models"
+	_ "github.com/ParsaAminpour/GoCoin/models"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/joho/godotenv"
 	echojwt "github.com/labstack/echo-jwt"
@@ -23,31 +25,8 @@ import (
 var (
 	db   *gorm.DB
 	once sync.Once
+	mu   = sync.Mutex{}
 )
-
-type User struct {
-	gorm.Model
-	Username string `json:"username"`
-	Email    string `json:"email"`
-}
-
-func (u *User) GetUser(username string) User {
-	var user User
-	res := db.Where("username = ?", username).First(&user)
-	if res.RowsAffected == 0 {
-		return User{}
-	}
-	return user
-}
-
-type Config struct {
-	Host     string
-	Port     string
-	Password string
-	User     string
-	DBName   string
-	SSLMode  string
-}
 
 func getDB() *gorm.DB {
 	once.Do(func() {
@@ -63,7 +42,7 @@ func getDB() *gorm.DB {
 	return db
 }
 
-func init_db_connection(conf *Config) (*gorm.DB, error) {
+func init_db_connection(conf *models.Config) (*gorm.DB, error) {
 	fmt.Println("I'm here...")
 	if db != nil {
 		return nil, fmt.Errorf("Db already initialized")
@@ -80,7 +59,7 @@ func init_db_connection(conf *Config) (*gorm.DB, error) {
 	fmt.Println("Connected to DB")
 
 	// AutoMigrate the User model
-	if err := db.AutoMigrate(&User{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
 	}
 	fmt.Println("I'm here too...")
@@ -88,12 +67,12 @@ func init_db_connection(conf *Config) (*gorm.DB, error) {
 	return db, nil
 }
 
-func extract_db_config() (Config, error) {
+func extract_db_config() (models.Config, error) {
 	err := godotenv.Load()
 	if err != nil {
-		return Config{}, fmt.Errorf("error occurred in opening .env")
+		return models.Config{}, fmt.Errorf("error occurred in opening .env")
 	}
-	db_conf := Config{
+	db_conf := models.Config{
 		Host:     os.Getenv("DB_HOST"),
 		Port:     os.Getenv("DB_PORT"),
 		Password: os.Getenv("DB_PASSWORD"),
@@ -106,26 +85,30 @@ func extract_db_config() (Config, error) {
 }
 
 func fetchUser(c echo.Context) error {
+	mu.Lock()
+	defer mu.Unlock()
+
 	req_username := c.Param("username")
 	fmt.Println(req_username)
+	database := &models.Database{DB: db}
 
-	var user User
-	res := db.Where("username = ?", req_username).Find(&user)
+	var user models.User
+	res := database.GetUser(&user, req_username)
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 
-	if res.RowsAffected == 0 {
+	if errors.Is(res, fmt.Errorf("User not found")) {
 		c.Response().WriteHeader(http.StatusNoContent)
-		fmt.Println("fuccckkk2")
-		return c.String(http.StatusNoContent, "User Not Found")
+		return c.String(http.StatusNoContent, res.Error())
 	} else {
 		c.Response().WriteHeader(http.StatusOK)
-		fmt.Println("fuccckkk")
 		return json.NewEncoder(c.Response()).Encode(&user)
 	}
 }
 
 func createUser(c echo.Context) error {
-	u := new(User)
+	mu.Lock()
+	defer mu.Unlock()
+	u := new(models.User)
 
 	// Bind JSON data directly into the User struct
 	if err := c.Bind(u); err != nil {
@@ -146,16 +129,20 @@ func createUser(c echo.Context) error {
 }
 
 func getAllUsers(c echo.Context) error {
-	var users []User
+	mu.Lock()
+	defer mu.Unlock()
+	var users []models.User
 	db.Find(&users)
 
 	return c.JSON(http.StatusOK, users)
 }
 
 func deleteUser(c echo.Context) error {
+	mu.Lock()
+	defer mu.Unlock()
 	id := c.Param("id")
 
-	var user User
+	var user models.User
 	if err := db.First(&user, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "User not found"})
@@ -170,9 +157,21 @@ func deleteUser(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "User deleted successfully"})
 }
 
+func signup(c echo.Context) error {
+	mu.Lock()
+	defer mu.Unlock()
+	return nil
+}
+
+func login(c echo.Context) error {
+	mu.Lock()
+	defer mu.Unlock()
+	return nil
+}
+
 func main() {
-	database := getDB()
-	fmt.Println("DB initialized:", database)
+	my_db := getDB()
+	fmt.Println("DB initialized:", my_db)
 
 	fmt.Println("DB initialized successfully")
 	fmt.Println("err: ", db.Error)
@@ -180,12 +179,18 @@ func main() {
 	e := echo.New()
 
 	e.Use(echojwt.JWT([]byte("secret")))
+	e.Use(middleware.Recover())
+	e.Use(middleware.Logger())
 
 	e.Group("users")
 	e.GET("/users/get/:username", fetchUser)
 	e.GET("/users/all", getAllUsers)
 	e.POST("/users/create", createUser)
 	e.DELETE("/users/:id", deleteUser)
+
+	e.Group("auth")
+	e.POST("/auth/signup", signup)
+	e.POST("/atuh/login", login)
 
 	e.Use(middleware.TimeoutWithConfig(middleware.TimeoutConfig{
 		Skipper:      middleware.DefaultSkipper,
