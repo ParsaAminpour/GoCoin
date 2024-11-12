@@ -6,18 +6,18 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/ParsaAminpour/GoCoin/models"
 	_ "github.com/ParsaAminpour/GoCoin/models"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/joho/godotenv"
+	"github.com/fatih/color"
+	"github.com/golang-jwt/jwt"
 	echojwt "github.com/labstack/echo-jwt"
 	_ "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	_ "github.com/libp2p/go-libp2p"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -29,8 +29,9 @@ var (
 )
 
 func getDB() *gorm.DB {
+	conf := models.Config{}
 	once.Do(func() {
-		conf, err := extract_db_config()
+		conf, err := conf.ExtractDbConfig()
 		if err != nil {
 			log.Fatalf("Failed to extract DB config: %v", err)
 		}
@@ -67,21 +68,13 @@ func init_db_connection(conf *models.Config) (*gorm.DB, error) {
 	return db, nil
 }
 
-func extract_db_config() (models.Config, error) {
-	err := godotenv.Load()
-	if err != nil {
-		return models.Config{}, fmt.Errorf("error occurred in opening .env")
-	}
-	db_conf := models.Config{
-		Host:     os.Getenv("DB_HOST"),
-		Port:     os.Getenv("DB_PORT"),
-		Password: os.Getenv("DB_PASSWORD"),
-		User:     os.Getenv("DB_USER"),
-		DBName:   os.Getenv("DB_NAME"),
-		SSLMode:  os.Getenv("DB_SSLMODE"),
-	}
+func getAllUsers(c echo.Context) error {
+	mu.Lock()
+	defer mu.Unlock()
+	var users []models.User
+	db.Find(&users)
 
-	return db_conf, nil
+	return c.JSON(http.StatusOK, users)
 }
 
 func fetchUser(c echo.Context) error {
@@ -93,7 +86,7 @@ func fetchUser(c echo.Context) error {
 	database := &models.Database{DB: db}
 
 	var user models.User
-	res := database.GetUser(&user, req_username)
+	res := database.GetUser(&user, req_username, nil)
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 
 	if errors.Is(res, fmt.Errorf("User not found")) {
@@ -110,31 +103,20 @@ func createUser(c echo.Context) error {
 	defer mu.Unlock()
 	u := new(models.User)
 
-	// Bind JSON data directly into the User struct
 	if err := c.Bind(u); err != nil {
 		return c.String(http.StatusBadRequest, "Invalid parameters provided")
 	}
 
-	fmt.Printf("After Bind - Username: %s, Email: %s\n", u.Username, u.Email)
+	color.Green("Created: Username: %s, Email: %s\n", u.Username, u.Email)
+	encrypted_password, _ := u.HashUserPassword(u.Password)
+	u.Password = encrypted_password
+	database := &models.Database{DB: db}
 
-	if err := db.Create(u).Error; err != nil {
-		var pgError *pgconn.PgError
-		if errors.As(err, &pgError) && pgError.Code == "23505" {
-			return c.JSON(http.StatusConflict, map[string]string{"error": "Username or Email already exists"})
-		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not create user"})
+	err := database.CreateUser(u)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
-
 	return c.JSON(http.StatusCreated, u)
-}
-
-func getAllUsers(c echo.Context) error {
-	mu.Lock()
-	defer mu.Unlock()
-	var users []models.User
-	db.Find(&users)
-
-	return c.JSON(http.StatusOK, users)
 }
 
 func deleteUser(c echo.Context) error {
@@ -160,13 +142,66 @@ func deleteUser(c echo.Context) error {
 func signup(c echo.Context) error {
 	mu.Lock()
 	defer mu.Unlock()
-	return nil
+	user := new(models.User)
+	if err := c.Bind(user); err != nil {
+		return c.String(http.StatusBadRequest, "Invalid parameters provided")
+	}
+	// TODO: validating data here using echo .Validate
+
+	database := &models.Database{DB: db}
+	user.Password, _ = user.HashUserPassword(user.Password)
+
+	color.Green("Created: Username: %s, Email: %s\n", user.Username, user.Email)
+	err := database.CreateUser(user)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusCreated, user)
 }
 
 func login(c echo.Context) error {
 	mu.Lock()
 	defer mu.Unlock()
-	return nil
+
+	user := new(models.User)
+	database := &models.Database{DB: db}
+	if err := c.Bind(&user); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	//TODO: Adding param validation here.
+
+	var fetched_user models.User
+	if err := database.DB.Where("username = ? AND email = ?", user.Username, user.Email).First(&fetched_user).Error; err != nil {
+		return c.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
+	}
+
+	fmt.Printf("user.Password: %s | fetced_user: %s, %s, %s\n", user.Password, fetched_user.Username, fetched_user.Email, fetched_user.Password)
+	password_auth := user.PasswordHashValidation(user.Password, fetched_user.Password)
+	if !password_auth {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Password is wrong!"})
+	}
+
+	jwt_token, jwt_err := _generateJWT(fetched_user.Username, uint(time.Now().Add(24*time.Hour).Unix()))
+	if jwt_err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": jwt_err.Error()})
+	}
+	return c.JSON(http.StatusOK, echo.Map{
+		"message": "Login Successful",
+		"token":   jwt_token,
+	})
+}
+
+func _generateJWT(username string, exp_time uint) (string, error) {
+	claims := jwt.MapClaims{
+		"username": username,
+		"exp":      exp_time,
+	}
+	jwtSecret := []byte("SECRET")
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
 }
 
 func main() {
@@ -190,7 +225,9 @@ func main() {
 
 	e.Group("auth")
 	e.POST("/auth/signup", signup)
-	e.POST("/atuh/login", login)
+	e.POST("/auth/login", login)
+	e.POST("/auth/logout", func(c echo.Context) error { return nil })
+	e.POST("/auth/resert-password", func(c echo.Context) error { return nil })
 
 	e.Use(middleware.TimeoutWithConfig(middleware.TimeoutConfig{
 		Skipper:      middleware.DefaultSkipper,
