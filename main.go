@@ -9,8 +9,10 @@ import (
 	"sync"
 	"time"
 
+	_ "github.com/ParsaAminpour/GoCoin/config"
+	"github.com/ParsaAminpour/GoCoin/helper"
+	_ "github.com/ParsaAminpour/GoCoin/helper"
 	"github.com/ParsaAminpour/GoCoin/models"
-	_ "github.com/ParsaAminpour/GoCoin/models"
 	"github.com/fatih/color"
 	"github.com/golang-jwt/jwt"
 	echojwt "github.com/labstack/echo-jwt"
@@ -139,61 +141,6 @@ func deleteUser(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "User deleted successfully"})
 }
 
-func signup(c echo.Context) error {
-	mu.Lock()
-	defer mu.Unlock()
-	user := new(models.User)
-	if err := c.Bind(user); err != nil {
-		return c.String(http.StatusBadRequest, "Invalid parameters provided")
-	}
-	// TODO: validating data here using echo .Validate
-
-	database := &models.Database{DB: db}
-	user.Password, _ = user.HashUserPassword(user.Password)
-
-	color.Green("Created: Username: %s, Email: %s\n", user.Username, user.Email)
-	err := database.CreateUser(user)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusCreated, user)
-}
-
-func login(c echo.Context) error {
-	mu.Lock()
-	defer mu.Unlock()
-
-	user := new(models.User)
-	database := &models.Database{DB: db}
-	if err := c.Bind(&user); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": err.Error()})
-		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	//TODO: Adding param validation here.
-
-	var fetched_user models.User
-	if err := database.DB.Where("username = ? AND email = ?", user.Username, user.Email).First(&fetched_user).Error; err != nil {
-		return c.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
-	}
-
-	fmt.Printf("user.Password: %s | fetced_user: %s, %s, %s\n", user.Password, fetched_user.Username, fetched_user.Email, fetched_user.Password)
-	password_auth := user.PasswordHashValidation(user.Password, fetched_user.Password)
-	if !password_auth {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Password is wrong!"})
-	}
-
-	jwt_token, jwt_err := _generateJWT(fetched_user.Username, uint(time.Now().Add(24*time.Hour).Unix()))
-	if jwt_err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": jwt_err.Error()})
-	}
-	return c.JSON(http.StatusOK, echo.Map{
-		"message": "Login Successful",
-		"token":   jwt_token,
-	})
-}
-
 func _generateJWT(username string, exp_time uint) (string, error) {
 	claims := jwt.MapClaims{
 		"username": username,
@@ -204,6 +151,11 @@ func _generateJWT(username string, exp_time uint) (string, error) {
 	return token.SignedString(jwtSecret)
 }
 
+func withHandlerFunc(_handlerFunc func(c echo.Context, db *gorm.DB) error) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return _handlerFunc(c, db)
+	}
+}
 func main() {
 	my_db := getDB()
 	fmt.Println("DB initialized:", my_db)
@@ -224,8 +176,8 @@ func main() {
 	e.DELETE("/users/:id", deleteUser)
 
 	e.Group("auth")
-	e.POST("/auth/signup", signup)
-	e.POST("/auth/login", login)
+	e.POST("/auth/signup", withHandlerFunc(helper.Signup))
+	e.POST("/auth/login", withHandlerFunc(helper.Login))
 	e.POST("/auth/logout", func(c echo.Context) error { return nil })
 	e.POST("/auth/resert-password", func(c echo.Context) error { return nil })
 
