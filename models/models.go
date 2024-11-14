@@ -55,6 +55,7 @@ func (db *Database) GetUser(encode_to_user *User, username, email interface{}) e
 	return nil
 }
 
+// NOTE: Assume that encode_to_user.Password has been encoded.
 func (db *Database) CreateUser(encode_to_user *User) error {
 	if err := db.DB.Create(encode_to_user).Error; err != nil {
 		var pgError *pgconn.PgError

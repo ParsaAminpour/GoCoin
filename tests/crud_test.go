@@ -1,4 +1,4 @@
-package main
+package tests
 
 // Testing database functionality in memory as tmp_db to aviod main database manipulation
 import (
@@ -116,5 +116,37 @@ func TestLoginEndpointWithValidBody(t *testing.T) {
 	token_parts := strings.Split(response["token"], ".")
 	assert.Equal(t, response["message"], "Login Successful")
 	assert.Equal(t, token_parts[0], "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
-	// assert.Equal()
+}
+
+func TestResetPasswordEndpoint(t *testing.T) {
+	e := echo.New()
+	db, err := CreateTestMemDatabase()
+	assert.NoError(t, err)
+	defer CloseTestMemDatabase(db)
+	database := &models.Database{DB: db}
+
+	var mock_users []models.User
+	mock_users, _ = GenerateMockUsers(10)
+	err = createBatchUser(mock_users, db)
+	assert.NoError(t, err)
+
+	req_body := map[string]interface{}{
+		"username":     mock_users[0].Username,
+		"old-password": mock_users[0].Password,
+		"new-password": "newtestpasswordABC1",
+	}
+
+	req := SendRequest(req_body, http.MethodPost, "/auth/resert-password")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	helper.ResetPassword(c, db)
+
+	var response map[string]string
+	err = json.Unmarshal(rec.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.Equal(t, response["message"], "Successful")
+
+	var updated_user models.User
+	database.DB.Where("username = ?", mock_users[0].Username).Find(&updated_user)
+	assert.NotEqual(t, updated_user.Password, req_body["old-password"])
 }

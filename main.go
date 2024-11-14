@@ -159,15 +159,9 @@ func withHandlerFunc(_handlerFunc func(c echo.Context, db *gorm.DB) error) echo.
 func main() {
 	my_db := getDB()
 	fmt.Println("DB initialized:", my_db)
-
-	fmt.Println("DB initialized successfully")
 	fmt.Println("err: ", db.Error)
 
 	e := echo.New()
-
-	e.Use(echojwt.JWT([]byte("secret")))
-	e.Use(middleware.Recover())
-	e.Use(middleware.Logger())
 
 	e.Group("users")
 	e.GET("/users/get/:username", fetchUser)
@@ -179,8 +173,11 @@ func main() {
 	e.POST("/auth/signup", withHandlerFunc(helper.Signup))
 	e.POST("/auth/login", withHandlerFunc(helper.Login))
 	e.POST("/auth/logout", func(c echo.Context) error { return nil })
-	e.POST("/auth/resert-password", func(c echo.Context) error { return nil })
+	e.POST("/auth/resert-password", withHandlerFunc(helper.ResetPassword))
 
+	e.Use(echojwt.JWT([]byte("secret")))
+	e.Use(middleware.Recover())
+	e.Use(middleware.Logger())
 	e.Use(middleware.TimeoutWithConfig(middleware.TimeoutConfig{
 		Skipper:      middleware.DefaultSkipper,
 		ErrorMessage: "custom timeout error message returns to client",

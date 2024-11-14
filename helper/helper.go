@@ -73,6 +73,39 @@ func Login(c echo.Context, db *gorm.DB) error {
 	})
 }
 
+type ResetPasswordReqStructure struct {
+	Username    string `json:"username"`
+	OldPassword string `json:"old-password"`
+	NewPassword string `json:"new-password"`
+}
+
+func ResetPassword(c echo.Context, db *gorm.DB) error {
+	user := models.User{}
+	database := models.Database{DB: db}
+
+	bind_format := ResetPasswordReqStructure{}
+	if err := c.Bind(&bind_format); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	if err := database.DB.Where("username = ?", bind_format.Username).First(&user).Error; err != nil {
+		return c.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
+	}
+
+	if verified := user.PasswordHashValidation(bind_format.OldPassword, user.Password); !verified {
+		return c.JSON(http.StatusNonAuthoritativeInfo, map[string]string{"error": "Password is wrong"})
+	}
+	user.Password, _ = user.HashUserPassword(bind_format.NewPassword)
+	db.Save(&user)
+
+	return c.JSON(http.StatusOK, map[string]string{
+		"message": "Successful",
+	})
+}
+
 func _generateJWT(username string, exp_time uint) (string, error) {
 	claims := jwt.MapClaims{
 		"username": username,
