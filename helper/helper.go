@@ -19,8 +19,8 @@ var (
 )
 
 func Signup(c echo.Context, db *gorm.DB) error {
-	mu.Lock()
-	defer mu.Unlock()
+	// mu.Lock()
+	// defer mu.Unlock()
 	user := new(models.User)
 	if err := c.Bind(user); err != nil {
 		return c.String(http.StatusBadRequest, "Invalid parameters provided")
@@ -39,9 +39,8 @@ func Signup(c echo.Context, db *gorm.DB) error {
 }
 
 func Login(c echo.Context, db *gorm.DB) error {
-	mu.Lock()
-	defer mu.Unlock()
-
+	// mu.Lock()
+	// defer mu.Unlock()
 	user := new(models.User)
 	database := &models.Database{DB: db}
 	if err := c.Bind(&user); err != nil {
@@ -54,7 +53,7 @@ func Login(c echo.Context, db *gorm.DB) error {
 
 	var fetched_user models.User
 	if err := database.DB.Where("username = ? AND email = ?", user.Username, user.Email).First(&fetched_user).Error; err != nil {
-		return c.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": err.Error()})
 	}
 
 	fmt.Printf("user.Password: %s | fetced_user: %s, %s, %s\n", user.Password, fetched_user.Username, fetched_user.Email, fetched_user.Password)
@@ -79,27 +78,33 @@ type ResetPasswordReqStructure struct {
 	NewPassword string `json:"new-password"`
 }
 
+// TODO: Add concurrency to this endpoint handler.
 func ResetPassword(c echo.Context, db *gorm.DB) error {
+	// mu.Lock()
+	// defer mu.Unlock()
 	user := models.User{}
 	database := models.Database{DB: db}
 
 	bind_format := ResetPasswordReqStructure{}
 	if err := c.Bind(&bind_format); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid credentials"})
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Invalid credentials"})
 	}
 
 	if err := database.DB.Where("username = ?", bind_format.Username).First(&user).Error; err != nil {
-		return c.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
+		return c.JSON(http.StatusConflict, map[string]string{"error": "Invalid credentials"})
 	}
 
 	if verified := user.PasswordHashValidation(bind_format.OldPassword, user.Password); !verified {
-		return c.JSON(http.StatusNonAuthoritativeInfo, map[string]string{"error": "Password is wrong"})
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid credentials"})
 	}
+
 	user.Password, _ = user.HashUserPassword(bind_format.NewPassword)
-	db.Save(&user)
+	if err := db.Save(&user).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to update password!"})
+	}
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Successful",

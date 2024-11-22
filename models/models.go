@@ -84,11 +84,13 @@ type User struct {
 	Password string `json:"password" form:"password" validate:"required,min=8"`
 }
 
+// NOTE: these hashing password use bcrypt which handle the constant time compare behind the scene to avoid side-channel Timing Attack.
 func (u *User) HashUserPassword(password string) (string, error) {
 	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	return string(bytes), err
 }
 
+// NOTE: these hashing password use bcrypt which handle the constant time compare behind the scene to avoid side-channel Timing Attack.
 func (u *User) PasswordHashValidation(password, password_hash string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(password_hash), []byte(password))
 	return err == nil
