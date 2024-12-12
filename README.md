@@ -1,2 +1,2 @@
 # GoCoin
-GoCoin Centralized Crypto Exchange
+### Building a centralized P2P order book system for leisure.
